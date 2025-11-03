@@ -3,6 +3,11 @@ import random
 import sys
 import os
 import math
+import argparse
+import csv
+from datetime import datetime
+
+from agente import carregar_melhor_agente  # usa melhor_agente.json quando --play-best
 
 # =============================
 # CONFIGURAÇÕES
@@ -20,14 +25,19 @@ SOMBRA = (0, 0, 0)
 
 # Jogador
 JOGADOR_W, JOGADOR_H = 48, 48
-VEL_JOGADOR_BASE = 6
+VEL_JOGADOR_BASE = 6.0  # pode ser sobrescrito quando --play-best (pelo JSON)
 
-# Moedas
-RAIO_MOEDA = 10
+# Moedas (retângulo de colisão continua igual; só aumentamos o desenho)
+RAIO_MOEDA = 10                  # colisão
 QTD_MOEDAS = 7
+COIN_BASE_SIZE = 25              # tamanho base da sprite carregada
+COIN_ROT_SPEED = 180.0           # graus/seg
+COIN_PULSE_SPEED = 4.0           # Hz ~ “batimento”
+COIN_PULSE_MIN_SCALE = 1.25      # escala base maior (moeda “aumentada”)
+COIN_PULSE_AMP = 0.12            # amplitude do pulso (+-)
 
 # Obstáculos
-OBS_W, OBS_H = 80, 20
+OBS_W, OBS_H = 80, 40
 QTD_OBS_INICIAL = 4
 VEL_OBS_BASE = 4
 QTD_OBS_MAX = 10
@@ -35,18 +45,17 @@ QTD_OBS_MAX = 10
 # Tempo
 TEMPO_MAX_SEG = 60
 
-# Arquivos persistência
+# Persistência
 ARQUIVO_SCORE = "score.txt"
+ARQUIVO_CSV = "placar.csv"   # placar por partida
+ARQ_MELHOR = "melhor_agente.json"  # usado para ajustar vel_jogador no modo play-best
 
-# Caminhos de assets
+# Caminhos de assets (opcionais)
 ASSETS_DIR = "assets"
 PATH_BG = os.path.join(ASSETS_DIR, "bg.png")
 PATH_PLAYER = os.path.join(ASSETS_DIR, "player.png")
 PATH_COIN = os.path.join(ASSETS_DIR, "coin.png")
 PATH_OBS = os.path.join(ASSETS_DIR, "obstacle.png")
-PATH_SFX_COIN = os.path.join(ASSETS_DIR, "sfx_coin.wav")
-PATH_SFX_HIT = os.path.join(ASSETS_DIR, "sfx_hit.wav")
-PATH_MUSIC = os.path.join(ASSETS_DIR, "music.ogg")
 
 # Estados
 ESTADO_MENU = "menu"
@@ -54,26 +63,26 @@ ESTADO_JOGANDO = "jogando"
 ESTADO_PAUSA = "pausa"
 ESTADO_GAMEOVER = "gameover"
 
+# =============================
+# CSV / Placar
+# =============================
+def init_csv(caminho=ARQUIVO_CSV):
+    if not os.path.exists(caminho):
+        with open(caminho, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["nome", "pontos", "data_hora"])
+
+def registrar_placar(nome, pontos, caminho=ARQUIVO_CSV):
+    init_csv(caminho)
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(caminho, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([nome, int(pontos), agora])
+    print(f"[PLACAR] nome={nome} pontos={pontos} data_hora={agora}")
 
 # =============================
-# UTILIDADES
+# HELPERS
 # =============================
-def carregar_recorde():
-    try:
-        if os.path.exists(ARQUIVO_SCORE):
-            with open(ARQUIVO_SCORE, "r", encoding="utf-8") as f:
-                return int(f.read().strip() or "0")
-    except Exception:
-        pass
-    return 0
-
-def salvar_recorde(valor):
-    try:
-        with open(ARQUIVO_SCORE, "w", encoding="utf-8") as f:
-            f.write(str(int(valor)))
-    except Exception:
-        pass
-
 def fonte(tam, negrito=True):
     return pygame.font.SysFont(None, tam, bold=negrito)
 
@@ -94,9 +103,9 @@ def sombra_texto(surface, txt, tam, x, y, cor=HUD, dx=2, dy=2, centro=False):
 def criar_moedas():
     moedas = []
     for _ in range(QTD_MOEDAS):
-        x = random.randint(RAIO_MOEDA + 10, LARGURA - RAIO_MOEDA - 10)
-        y = random.randint(RAIO_MOEDA + 10, ALTURA - RAIO_MOEDA - 10)
-        moedas.append(pygame.Rect(x - RAIO_MOEDA, y - RAIO_MOEDA, RAIO_MOEDA*2, RAIO_MOEDA*2))
+        x = random.randint(RAIO_MOEDA + 10, LARGURA - RAIO_MOEDA - 10) - RAIO_MOEDA
+        y = random.randint(RAIO_MOEDA + 10, ALTURA - RAIO_MOEDA - 10) - RAIO_MOEDA
+        moedas.append(pygame.Rect(x, y, RAIO_MOEDA*2, RAIO_MOEDA*2))
     return moedas
 
 def criar_obstaculos(qtd, vel_base):
@@ -110,7 +119,6 @@ def criar_obstaculos(qtd, vel_base):
     return obs
 
 def load_image(path, size=None):
-    """Carrega imagem com segurança. Retorna Surface ou None se falhar."""
     try:
         if not os.path.exists(path):
             return None
@@ -121,121 +129,135 @@ def load_image(path, size=None):
     except Exception:
         return None
 
-def load_sound(path):
-    """Carrega som com segurança. Retorna Sound ou None."""
+def carregar_recorde():
     try:
-        if not os.path.exists(path):
-            return None
-        return pygame.mixer.Sound(path)
+        if os.path.exists(ARQUIVO_SCORE):
+            with open(ARQUIVO_SCORE, "r", encoding="utf-8") as f:
+                return int(f.read().strip() or "0")
     except Exception:
-        return None
+        pass
+    return 0
 
+def salvar_recorde(valor):
+    try:
+        with open(ARQUIVO_SCORE, "w", encoding="utf-8") as f:
+            f.write(str(int(valor)))
+    except Exception:
+        pass
+
+def _carregar_vel_playbest(default_vel):
+    # Se existir JSON do melhor agente, use a velocidade evoluída
+    try:
+        import json
+        if os.path.exists(ARQ_MELHOR):
+            with open(ARQ_MELHOR, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return float(data.get("vel_jogador", default_vel))
+    except Exception:
+        pass
+    return default_vel
 
 # =============================
 # JOGO
 # =============================
-def main():
-    # mixer pré-init para latência melhor (ignora se falhar)
-    try:
-        pygame.mixer.pre_init(44100, -16, 2, 256)
-    except Exception:
-        pass
-
+def main(play_best=False, nome_jogador="Jogador"):
     pygame.init()
-    pygame.display.set_caption("Coleta & Desvio")
+    pygame.display.set_caption("Coleta & Desvio (AG)")
     tela = pygame.display.set_mode((LARGURA, ALTURA))
     clock = pygame.time.Clock()
 
-    # Carregar sprites e sons (com fallback)
     bg_img = load_image(PATH_BG, (LARGURA, ALTURA))
     player_img = load_image(PATH_PLAYER, (JOGADOR_W, JOGADOR_H))
-    coin_base_img = load_image(PATH_COIN, (32, 32))  # base para animar
+    # Carrega sprite base da moeda (vamos rotacionar e pulsar no desenho)
+    coin_base_img = load_image(PATH_COIN, (COIN_BASE_SIZE, COIN_BASE_SIZE))
     obs_img = load_image(PATH_OBS, (OBS_W, OBS_H))
 
-    sfx_coin = load_sound(PATH_SFX_COIN)
-    sfx_hit = load_sound(PATH_SFX_HIT)
-
-    # Música de fundo (opcional)
-    try:
-        if os.path.exists(PATH_MUSIC):
-            pygame.mixer.music.load(PATH_MUSIC)
-            pygame.mixer.music.set_volume(0.4)
-            pygame.mixer.music.play(-1)  # loop infinito
-    except Exception:
-        pass
-
-    # Recorde
     recorde = carregar_recorde()
 
-    # Estado inicial
-    estado = ESTADO_MENU
+    estado = ESTADO_JOGANDO if play_best else ESTADO_MENU
     pontuacao = 0
     tempo = 0.0
 
     jogador = pygame.Rect(LARGURA//2 - JOGADOR_W//2, ALTURA//2 - JOGADOR_H//2, JOGADOR_W, JOGADOR_H)
+    jx, jy = float(jogador.x), float(jogador.y)
     vel_jogador = VEL_JOGADOR_BASE
+    if play_best:
+        vel_jogador = _carregar_vel_playbest(vel_jogador)
+
     moedas = criar_moedas()
     vel_obs = VEL_OBS_BASE
     obstaculos = criar_obstaculos(QTD_OBS_INICIAL, vel_obs)
 
-    # Dificuldade
     proximo_marco = 10
 
-    # Animação da moeda
-    coin_angle = 0.0  # rotação
-    coin_pulse_t = 0.0  # “pulso” leve de escala
+    # --- animação de dano (flash) ---
+    flash_t = 0.0
+    FLASH_DUR = 0.15
 
-    # Flash de dano
-    flash_t = 0.0  # segundos restantes de flash
+    # --- animação das moedas ---
+    coin_angle = 0.0
+    coin_pulse_t = 0.0
+
+    # AGENTE (se play_best)
+    agente = carregar_melhor_agente() if play_best else None
+
+    # CSV placar
+    init_csv()
 
     rodando = True
     while rodando:
         dt = clock.tick(FPS) / 1000.0
 
-        # ---------------------------
-        # Eventos
-        # ---------------------------
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 rodando = False
 
-            if estado == ESTADO_MENU:
-                if event.type == pygame.KEYDOWN:
-                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        estado = ESTADO_JOGANDO
-                        # reset
-                        pontuacao = 0
-                        tempo = 0.0
-                        proximo_marco = 10
-                        vel_jogador = VEL_JOGADOR_BASE
-                        vel_obs = VEL_OBS_BASE
-                        jogador = pygame.Rect(LARGURA//2 - JOGADOR_W//2, ALTURA//2 - JOGADOR_H//2, JOGADOR_W, JOGADOR_H)
-                        moedas = criar_moedas()
-                        obstaculos = criar_obstaculos(QTD_OBS_INICIAL, vel_obs)
-                        flash_t = 0.0
-                        coin_angle = 0.0
-                        coin_pulse_t = 0.0
-                    elif event.key == pygame.K_ESCAPE:
-                        rodando = False
+            if estado == ESTADO_MENU and event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                    estado = ESTADO_JOGANDO  # manual
+                    pontuacao = 0
+                    tempo = 0.0
+                    proximo_marco = 10
+                    vel_obs = VEL_OBS_BASE
+                    jogador.topleft = (LARGURA//2 - JOGADOR_W//2, ALTURA//2 - JOGADOR_H//2)
+                    jx, jy = float(jogador.x), float(jogador.y)
+                    moedas = criar_moedas()
+                    obstaculos = criar_obstaculos(QTD_OBS_INICIAL, vel_obs)
+                    agente = None
+                    flash_t = 0.0
+                    vel_jogador = VEL_JOGADOR_BASE
+                    # reset animação das moedas
+                    coin_angle = 0.0
+                    coin_pulse_t = 0.0
+                if event.key == pygame.K_ESCAPE:
+                    rodando = False
 
-            elif estado == ESTADO_JOGANDO:
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
-                    estado = ESTADO_PAUSA
+            if estado == ESTADO_GAMEOVER and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    estado = ESTADO_JOGANDO if play_best else ESTADO_MENU
+                    pontuacao = 0
+                    tempo = 0.0
+                    proximo_marco = 10
+                    vel_obs = VEL_OBS_BASE
+                    jogador.topleft = (LARGURA//2 - JOGADOR_W//2, ALTURA//2 - JOGADOR_H//2)
+                    jx, jy = float(jogador.x), float(jogador.y)
+                    moedas = criar_moedas()
+                    obstaculos = criar_obstaculos(QTD_OBS_INICIAL, vel_obs)
+                    agente = carregar_melhor_agente() if play_best else None
+                    flash_t = 0.0
+                    vel_jogador = _carregar_vel_playbest(VEL_JOGADOR_BASE) if play_best else VEL_JOGADOR_BASE
+                    # reset animação das moedas
+                    coin_angle = 0.0
+                    coin_pulse_t = 0.0
+                if event.key == pygame.K_ESCAPE:
+                    rodando = False
 
-            elif estado == ESTADO_PAUSA:
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
-                    estado = ESTADO_JOGANDO
+            if estado == ESTADO_JOGANDO and event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                estado = ESTADO_PAUSA
+            elif estado == ESTADO_PAUSA and event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                estado = ESTADO_JOGANDO
 
-            elif estado == ESTADO_GAMEOVER:
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r:
-                        estado = ESTADO_MENU
-                    elif event.key == pygame.K_ESCAPE:
-                        rodando = False
-
-        # ---------------------------
-        # Lógica por estado
-        # ---------------------------
+        # ----------- LÓGICA -----------
         if estado == ESTADO_JOGANDO:
             tempo += dt
             if tempo >= TEMPO_MAX_SEG:
@@ -243,145 +265,133 @@ def main():
                 if pontuacao > recorde:
                     recorde = pontuacao
                     salvar_recorde(recorde)
+                registrar_placar(nome_jogador, pontuacao)
 
-            # dificuldade progressiva
-            if tempo >= proximo_marco and tempo < TEMPO_MAX_SEG:
-                proximo_marco += 10
-                vel_obs += 0.8
+            if estado == ESTADO_JOGANDO:
+                if tempo >= proximo_marco:
+                    proximo_marco += 10
+                    vel_obs += 0.8
+                    for o in obstaculos:
+                        o["velx"] = (vel_obs if o["velx"] > 0 else -vel_obs)
+                    if len(obstaculos) < QTD_OBS_MAX:
+                        obstaculos += criar_obstaculos(1, vel_obs)
+
+                # movimento
+                if agente is not None:
+                    vx, vy = agente.decidir(jogador, moedas, [o["rect"] for o in obstaculos])
+                    if vx == 0.0 and vy == 0.0:
+                        vx = 1.0
+                    jx += vx * vel_jogador
+                    jy += vy * vel_jogador
+                else:
+                    teclas = pygame.key.get_pressed()
+                    dx = dy = 0.0
+                    if teclas[pygame.K_LEFT] or teclas[pygame.K_a]:   dx -= vel_jogador
+                    if teclas[pygame.K_RIGHT] or teclas[pygame.K_d]:  dx += vel_jogador
+                    if teclas[pygame.K_UP] or teclas[pygame.K_w]:     dy -= vel_jogador
+                    if teclas[pygame.K_DOWN] or teclas[pygame.K_s]:   dy += vel_jogador
+                    jx += dx
+                    jy += dy
+
+                jx = max(0.0, min(LARGURA - JOGADOR_W, jx))
+                jy = max(0.0, min(ALTURA - JOGADOR_H, jy))
+                jogador.x = int(round(jx))
+                jogador.y = int(round(jy))
+
                 for o in obstaculos:
-                    o["velx"] = (vel_obs if o["velx"] > 0 else -vel_obs)
-                if len(obstaculos) < QTD_OBS_MAX:
-                    obstaculos += criar_obstaculos(1, vel_obs)
+                    o["rect"].x += o["velx"]
+                    if o["rect"].left <= 0 or o["rect"].right >= LARGURA:
+                        o["velx"] *= -1
 
-            # movimento jogador
-            teclas = pygame.key.get_pressed()
-            dx = dy = 0
-            if teclas[pygame.K_LEFT] or teclas[pygame.K_a]:
-                dx -= vel_jogador
-            if teclas[pygame.K_RIGHT] or teclas[pygame.K_d]:
-                dx += vel_jogador
-            if teclas[pygame.K_UP] or teclas[pygame.K_w]:
-                dy -= vel_jogador
-            if teclas[pygame.K_DOWN] or teclas[pygame.K_s]:
-                dy += vel_jogador
-
-            jogador.x += dx
-            jogador.y += dy
-
-            # limites
-            if jogador.left < 0: jogador.left = 0
-            if jogador.right > LARGURA: jogador.right = LARGURA
-            if jogador.top < 0: jogador.top = 0
-            if jogador.bottom > ALTURA: jogador.bottom = ALTURA
-
-            # obsts ping-pong
-            for o in obstaculos:
-                o["rect"].x += o["velx"]
-                if o["rect"].left <= 0 or o["rect"].right >= LARGURA:
-                    o["velx"] *= -1
-
-            # colisão com obstáculo -> -2 pontos e flash
-            for o in obstaculos:
-                if jogador.colliderect(o["rect"]):
-                    if pontuacao > 0:
+                # colisões
+                for o in obstaculos:
+                    if jogador.colliderect(o["rect"]):
                         pontuacao = max(0, pontuacao - 2)
-                    flash_t = 0.15  # 150ms de flash
-                    if sfx_hit:
-                        try: sfx_hit.play()
-                        except Exception: pass
+                        flash_t = FLASH_DUR
 
-            # pegar moedas -> +1 e reposiciona
-            for m in moedas:
-                if jogador.colliderect(m):
-                    pontuacao += 1
-                    m.x = random.randint(RAIO_MOEDA + 10, LARGURA - RAIO_MOEDA - 10) - RAIO_MOEDA
-                    m.y = random.randint(RAIO_MOEDA + 10, ALTURA - RAIO_MOEDA - 10) - RAIO_MOEDA
-                    if sfx_coin:
-                        try: sfx_coin.play()
-                        except Exception: pass
+                for m in moedas:
+                    if jogador.colliderect(m):
+                        pontuacao += 1
+                        m.x = random.randint(RAIO_MOEDA + 10, LARGURA - RAIO_MOEDA - 10) - RAIO_MOEDA
+                        m.y = random.randint(RAIO_MOEDA + 10, ALTURA - RAIO_MOEDA - 10) - RAIO_MOEDA
 
-            # animações
-            coin_angle = (coin_angle + 180 * dt) % 360  # gira ~180º/seg
-            coin_pulse_t += dt
-            if flash_t > 0:
-                flash_t -= dt
+                if flash_t > 0.0:
+                    flash_t = max(0.0, flash_t - dt)
 
-        # ---------------------------
-        # Desenho
-        # ---------------------------
+                # animação das moedas
+                coin_angle = (coin_angle + COIN_ROT_SPEED * dt) % 360.0
+                coin_pulse_t += dt
+
+        # ----------- DESENHO -----------
         if bg_img:
             tela.blit(bg_img, (0, 0))
         else:
             tela.fill(BG_COR)
 
         if estado in (ESTADO_JOGANDO, ESTADO_PAUSA, ESTADO_GAMEOVER):
-            # desenhar moedas (sprite com rotação + leve “pulso”)
+            # desenhar moedas com rotação + pulso, centralizando no rect da colisão
             for m in moedas:
                 if coin_base_img:
-                    # pulso suave (escala entre 0.9 e 1.1)
-                    scale = 1.0 + 0.1 * math.sin(coin_pulse_t * 4.0)
+                    scale = COIN_PULSE_MIN_SCALE + COIN_PULSE_AMP * math.sin(coin_pulse_t * COIN_PULSE_SPEED)
                     coin_scaled = pygame.transform.rotozoom(coin_base_img, coin_angle, scale)
                     rect_img = coin_scaled.get_rect(center=(m.centerx, m.centery))
                     tela.blit(coin_scaled, rect_img.topleft)
                 else:
-                    pygame.draw.circle(tela, MOEDA_COR, (m.x + RAIO_MOEDA, m.y + RAIO_MOEDA), RAIO_MOEDA)
+                    pygame.draw.circle(tela, MOEDA_COR, (m.centerx, m.centery), int(RAIO_MOEDA * 1.4))
 
-            # obstáculos
             for o in obstaculos:
                 if obs_img:
                     tela.blit(obs_img, (o["rect"].x, o["rect"].y))
                 else:
                     pygame.draw.rect(tela, OBS_COR, o["rect"])
 
-            # jogador
             if player_img:
                 tela.blit(player_img, (jogador.x, jogador.y))
             else:
                 pygame.draw.rect(tela, JOGADOR_COR, jogador)
 
-            # flash de dano (breve overlay avermelhado)
-            if flash_t > 0:
+            if (estado == ESTADO_JOGANDO) and (flash_t > 0.0):
                 overlay = pygame.Surface((LARGURA, ALTURA), pygame.SRCALPHA)
-                alpha = int(180 * (flash_t / 0.15))  # desbota até 0
+                alpha = int(180 * (flash_t / FLASH_DUR))
                 overlay.fill((255, 50, 50, alpha))
                 tela.blit(overlay, (0, 0))
 
-            # HUD
-            tempo_rest = max(0, int(TEMPO_MAX_SEG - tempo)) if estado != ESTADO_GAMEOVER else 0
+            tempo_rest = 0 if estado == ESTADO_GAMEOVER else max(0, int(TEMPO_MAX_SEG - tempo))
             sombra_texto(tela, f"Pontos: {pontuacao}", 28, 12, 10)
             sombra_texto(tela, f"Tempo: {tempo_rest}s", 28, 12, 42)
-            sombra_texto(tela, f"Recorde: {recorde}", 28, LARGURA-12-160, 10)  # pequena margem
+            sombra_texto(tela, f"Recorde: {recorde}", 28, LARGURA-12-160, 10)
 
-            if estado == ESTADO_JOGANDO:
-                desenhar_texto(tela, "P para pausar", 20, (200, 200, 200), LARGURA-160, 44)
+            if play_best and estado != ESTADO_MENU:
+                desenhar_texto(tela, "AGENTE: ON (--play-best)", 20, (200, 230, 255), 12, 74)
 
         if estado == ESTADO_MENU:
-            sombra_texto(tela, "COLETA & DESVIO", 72, LARGURA//2, ALTURA//2 - 80, centro=True)
+            sombra_texto(tela, "COLETA & DESVIO (AG)", 72, LARGURA//2, ALTURA//2 - 80, centro=True)
             desenhar_texto(tela, "Colete moedas, desvie dos obstáculos e faça pontos em 60s!", 26, HUD, LARGURA//2, ALTURA//2 - 10, centro=True)
-            desenhar_texto(tela, "ENTER/ESPAÇO para jogar | ESC para sair", 24, HUD, LARGURA//2, ALTURA//2 + 40, centro=True)
-            desenhar_texto(tela, f"Recorde atual: {recorde}", 24, (180, 220, 255), LARGURA//2, ALTURA//2 + 90, centro=True)
-
-        elif estado == ESTADO_PAUSA:
-            sombra_texto(tela, "PAUSADO", 60, LARGURA//2, ALTURA//2 - 20, centro=True)
-            desenhar_texto(tela, "Pressione P para continuar", 26, HUD, LARGURA//2, ALTURA//2 + 30, centro=True)
+            desenhar_texto(tela, "ENTER/ESPAÇO para jogar (manual) | ESC para sair", 22, HUD, LARGURA//2, ALTURA//2 + 40, centro=True)
+            desenhar_texto(tela, "Dica: rode 'genetico.py' para evoluir e depois use --play-best", 20, (180, 220, 255), LARGURA//2, ALTURA//2 + 80, centro=True)
 
         elif estado == ESTADO_GAMEOVER:
             sombra_texto(tela, "FIM DE JOGO!", 64, LARGURA//2, ALTURA//2 - 60, centro=True)
             desenhar_texto(tela, f"Pontuação: {pontuacao}", 30, HUD, LARGURA//2, ALTURA//2 - 10, centro=True)
-            if pontuacao >= recorde:
-                desenhar_texto(tela, "Novo recorde!", 26, (255, 200, 60), LARGURA//2, ALTURA//2 + 26, centro=True)
             desenhar_texto(tela, "R para reiniciar | ESC para sair", 24, HUD, LARGURA//2, ALTURA//2 + 70, centro=True)
+            desenhar_texto(tela, "Placar salvo em 'placar.csv'", 20, (180, 220, 255), LARGURA//2, ALTURA//2 + 110, centro=True)
 
         pygame.display.flip()
 
-    # fim do loop
-    try:
-        pygame.mixer.music.stop()
-    except Exception:
-        pass
     pygame.quit()
     sys.exit()
 
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--play-best", action="store_true",
+                        help="Inicia o jogo com o agente treinado (pula o menu).")
+    parser.add_argument("--nome", type=str, default="Jogador",
+                        help="Nome do jogador (usado no placar.csv)")
+    args = parser.parse_args()
+
+    if args.play_best:
+        print("[INFO] Modo --play-best ATIVO (usa melhor_agente.json).")
+    else:
+        print("[INFO] Modo manual. Dica: execute 'python genetico.py' para treinar o agente.")
+
+    main(play_best=args.play_best, nome_jogador=args.nome)
