@@ -120,9 +120,20 @@ python main.py
 
 ---
 
+## 🚀 Melhorias Futuras
+
+- Adicionar efeitos sonoros ao coletar moedas ou bater em obstáculos  
+- Incluir sprites/imagens no lugar dos retângulos  
+- Criar um sistema de níveis ou modo infinito  
+- Implementar um modo IA que aprenda a jogar sozinho (com base no documento de neuroevolução que inspirou o projeto)
+
+> 💭 Estas ideias estão listadas para orientar futuras versões do jogo e demonstrar possibilidades de expansão do projeto.
+
+---
+
 ## 👨‍💻 Autor
 
 **Desenvolvido por:** *Matteo Souza Caetano*  
-📧 *E-mail:* (adicione aqui, se quiser)  
-🎓 *Disciplina:* Fundamentos de Programação / PUC Goiás  
+📧 *E-mail:* matteoscaetano@gmail.com  
+🎓 *Disciplina:* Inteligencia Artificial Aplicada / PUC Goiás  
 📅 *Ano:* 2025
